@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    container_name: zookeeper
+    platform: linux/arm64
+    ports:
+      - "22181:2181"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+      - BITNAMI_DEBUG=true
+    networks:
+      - app-network
+
+  kafka:
+    image: bitnami/kafka:latest
+    container_name: kafka
+    platform: linux/arm64
+    ports:
+      - "9090:9090"
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9090
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9090  # ✅ Fix hostname for Docker network
+      - KAFKA_CFG_LOG_DIRS=/tmp/kafka-logs
+      - BITNAMI_DEBUG=true
+    depends_on:
+      - zookeeper
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--list", "--bootstrap-server", "kafka:9090"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-network
+
+  mongodb:
+    image: mongo:8.0
+    container_name: mongodb
+    platform: linux/arm64
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - app-network
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    platform: linux/arm64
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    platform: linux/arm64
+    ports:
+      - "3001:3000"
+    networks:
+      - app-network
+
+  api:
+    build: .
+    container_name: log-api
+    platform: linux/arm64
+    ports:
+      - "4000:4000"
+    depends_on:
+      - mongodb
+      - kafka
+      - redis
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/logs
+      - KAFKA_BROKER=kafka:9090
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - app-network
+
+  consumer:
+    build: .
+    container_name: log-consumer
+    platform: linux/arm64
+    depends_on:
+      kafka:
+        condition: service_healthy  # ✅ Wait for Kafka to be ready
+      mongodb:
+        condition: service_started
+    environment:
+      - KAFKA_BROKER=kafka:9090
+      - MONGO_URI=mongodb://mongodb:27017/logs
+    command: ["sh", "-c", "sleep 20 && node consumer.js"]  # ✅ Wait for Kafka before starting consumer
+    restart: always
+    networks:
+      - app-network
+
+volumes:
+  mongo-data: {}
+
+networks:
+  app-network:
+    driver: bridge
